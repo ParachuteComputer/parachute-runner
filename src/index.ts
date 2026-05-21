@@ -1,9 +1,11 @@
 /**
  * @openparachute/runner — library entry.
  *
- * Phase 1.0 scaffolding: the public API surface is declared so downstream
- * callers (and Phase 1.1+ work) have stable shapes to import. The
- * implementations land later.
+ * Phase 1.1 wires the public surface: `runOnce` enumerates jobs and matures
+ * each one; `serve` starts the long-running daemon (poll + cron schedule +
+ * healthz HTTP). The shapes below are also re-exported as named modules for
+ * callers that need to drop down to a specific layer (vault client, parser,
+ * etc.).
  *
  * See the design doc:
  *   https://github.com/ParachuteComputer/parachute.computer/blob/main/design/2026-05-21-parachute-runner-design.md
@@ -11,15 +13,31 @@
 
 import pkg from "../package.json" with { type: "json" };
 
-/** Package semver. Exposed so callers can verify which runner they linked. */
+import { type RunnerConfig, loadConfig } from "./config.ts";
+import { startHealthz } from "./healthz.ts";
+import { parseJob } from "./job-parser.ts";
+import { runJob } from "./run-job.ts";
+import { Scheduler } from "./scheduler.ts";
+import { VaultClient, type VaultNote } from "./vault-client.ts";
+
+export * from "./config.ts";
+export * from "./job-parser.ts";
+export * from "./template.ts";
+export * from "./mcp-config.ts";
+export * from "./spawn.ts";
+export * from "./output-writer.ts";
+export * from "./vault-client.ts";
+export * from "./run-job.ts";
+export { Scheduler } from "./scheduler.ts";
+export type { SchedulerEvent, SchedulerOpts } from "./scheduler.ts";
+export { startHealthz } from "./healthz.ts";
+
+/** Package semver. */
 export const VERSION: string = pkg.version;
 
-/**
- * Options for {@link runOnce}.
- *
- * The shape is provisional — Phase 1.1 fills the fields in and may rename or
- * extend before the first non-rc release.
- */
+/** Default healthz port (per design doc decision 6, runner claims 1945). */
+export const DEFAULT_PORT = 1945;
+
 export type RunOnceOptions = {
   /** Limit maturation to a single job by vault path. */
   only?: string;
@@ -27,32 +45,155 @@ export type RunOnceOptions = {
   date?: string;
   /** Enumerate + render but skip the `claude -p` spawn. */
   dryRun?: boolean;
+  /** Override config path (tests use a tempdir). */
+  configPath?: string;
+  /** Logger override; default console. */
+  logger?: Pick<Console, "log" | "warn" | "error">;
+};
+
+export type RunOnceResult = {
+  total: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
 };
 
 /**
- * Options for {@link serve}.
- *
- * Provisional — Phase 1.1 fills it in.
+ * One-shot: query the vault for `tag:job`, mature any due jobs, write
+ * outputs, exit. `--only <path>` narrows to a single job (including
+ * `schedule: manual` jobs, which are otherwise skipped).
  */
-export type ServeOptions = {
-  /** Override `poll_interval_seconds` from config for this invocation. */
-  pollIntervalSeconds?: number;
-};
+export async function runOnce(opts: RunOnceOptions = {}): Promise<RunOnceResult> {
+  const config = loadConfig(opts.configPath);
+  const logger = opts.logger ?? console;
+  if (config.disabled) {
+    logger.warn("[runner] config.disabled=true — exiting without running any jobs");
+    return { total: 0, succeeded: 0, failed: 0, skipped: 0 };
+  }
+  const client = new VaultClient({
+    vaultUrl: config.vault_url,
+    vaultName: config.vault_name,
+    vaultToken: config.vault_token,
+  });
 
-/**
- * One-shot: query the vault for `tag:job`, mature any due jobs, write outputs, exit.
- *
- * **Phase 1.0 stub — throws.** Wired up in Phase 1.1.
- */
-export async function runOnce(_opts: RunOnceOptions = {}): Promise<void> {
-  throw new Error("runOnce: not yet implemented (Phase 1.1)");
+  let notes: VaultNote[];
+  if (opts.only) {
+    const note = await client.getNote(opts.only);
+    if (!note) {
+      logger.error(`[runner] no note found at ${opts.only}`);
+      return { total: 0, succeeded: 0, failed: 0, skipped: 0 };
+    }
+    notes = [note];
+  } else {
+    notes = await client.queryJobs();
+    notes = notes.filter((n) => !(n.path ?? "").startsWith("jobs/runs/"));
+  }
+
+  let succeeded = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const note of notes) {
+    let job: ReturnType<typeof parseJob>;
+    try {
+      job = parseJob(note);
+    } catch (e) {
+      logger.error(`[runner] invalid job at ${note.path ?? note.id}: ${(e as Error).message}`);
+      failed++;
+      continue;
+    }
+    // `manual` jobs and `disabled` jobs are skipped unless --only targets them.
+    if (!opts.only && (job.disabled || job.cronString === null)) {
+      logger.log(`[runner] skip ${job.path} (${job.disabled ? "disabled" : "manual"})`);
+      skipped++;
+      continue;
+    }
+    if (opts.dryRun) {
+      logger.log(`[runner] dry-run ${job.path} (model=${job.model}, schedule=${job.schedule})`);
+      skipped++;
+      continue;
+    }
+    try {
+      const result = await runJob({ client, job, date: opts.date });
+      logger.log(
+        `[runner] ${result.outcome.status === "ok" ? "ok" : "FAILED"} ${job.path} → ${result.outcome.outputPath}`,
+      );
+      if (result.outcome.status === "ok") succeeded++;
+      else failed++;
+    } catch (e) {
+      logger.error(`[runner] error running ${job.path}: ${(e as Error).message}`);
+      failed++;
+    }
+  }
+  return { total: notes.length, succeeded, failed, skipped };
 }
 
+export type ServeOptions = {
+  /** Override `poll_interval_seconds` from config. */
+  pollIntervalSeconds?: number;
+  /** Override the healthz port. Defaults to DEFAULT_PORT. */
+  port?: number;
+  /** Override config path (tests use a tempdir). */
+  configPath?: string;
+  /** Graceful shutdown deadline. */
+  shutdownTimeoutMs?: number;
+  /** Logger override; default console. */
+  logger?: Pick<Console, "log" | "warn" | "error">;
+};
+
+export type ServeHandle = {
+  scheduler: Scheduler;
+  server: ReturnType<typeof Bun.serve>;
+  config: RunnerConfig;
+  stop: () => Promise<void>;
+};
+
 /**
- * Long-running daemon: poll the vault for jobs on a cadence and mature them on schedule.
- *
- * **Phase 1.0 stub — throws.** Wired up in Phase 1.1.
+ * Long-running daemon: poll the vault for jobs on a cadence and mature them
+ * on schedule. Returns a handle that the CLI uses to wire SIGINT/SIGTERM
+ * into graceful shutdown.
  */
-export async function serve(_opts: ServeOptions = {}): Promise<void> {
-  throw new Error("serve: not yet implemented (Phase 1.1)");
+export async function serve(opts: ServeOptions = {}): Promise<ServeHandle> {
+  const config = loadConfig(opts.configPath);
+  const logger = opts.logger ?? console;
+  const port = opts.port ?? DEFAULT_PORT;
+  const client = new VaultClient({
+    vaultUrl: config.vault_url,
+    vaultName: config.vault_name,
+    vaultToken: config.vault_token,
+  });
+  const scheduler = new Scheduler({
+    client,
+    pollIntervalSeconds: opts.pollIntervalSeconds ?? config.poll_interval_seconds,
+    maxConcurrentJobs: config.max_concurrent_jobs,
+    disabled: config.disabled,
+    logger,
+    onJobRun: (event) => {
+      if (event.type === "job-loaded") {
+        logger.log(`[scheduler] +${event.jobPath} (${event.schedule})`);
+      } else if (event.type === "job-removed") {
+        logger.log(`[scheduler] -${event.jobPath}`);
+      } else if (event.type === "job-parse-error") {
+        logger.warn(`[scheduler] invalid ${event.jobPath}: ${event.reasons.join("; ")}`);
+      } else if (event.type === "job-fired") {
+        logger.log(`[scheduler] fired ${event.jobPath} (${event.status})`);
+      } else if (event.type === "job-error") {
+        logger.error(`[scheduler] error ${event.jobPath}: ${event.error}`);
+      }
+    },
+  });
+  await scheduler.start();
+  const startedAt = new Date();
+  const server = startHealthz({ scheduler, port, startedAt });
+  logger.log(
+    `[runner] serve: vault=${config.vault_url} vault_name=${config.vault_name} port=${port} jobs=${scheduler.scheduledJobs}`,
+  );
+
+  const stop = async () => {
+    logger.log("[runner] shutting down — draining in-flight jobs");
+    await scheduler.stop(opts.shutdownTimeoutMs ?? 30_000);
+    server.stop();
+    logger.log("[runner] stopped");
+  };
+
+  return { scheduler, server, config, stop };
 }

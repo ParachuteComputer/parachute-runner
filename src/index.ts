@@ -21,6 +21,7 @@ import { parseJob } from "./job-parser.ts";
 import { runJob } from "./run-job.ts";
 import { Scheduler } from "./scheduler.ts";
 import { SecretsStore } from "./secrets.ts";
+import { resolveProjectRoot, selfRegister } from "./self-register.ts";
 import { VaultClient, type VaultNote } from "./vault-client.ts";
 
 export * from "./config.ts";
@@ -33,6 +34,9 @@ export * from "./vault-client.ts";
 export * from "./run-job.ts";
 export * from "./secrets.ts";
 export * from "./auth.ts";
+export * from "./services-manifest.ts";
+export { resolveProjectRoot, selfRegister } from "./self-register.ts";
+export type { SelfRegisterOpts, SelfRegisterResult } from "./self-register.ts";
 export { Scheduler } from "./scheduler.ts";
 export type { SchedulerEvent, SchedulerOpts, SchedulerJobSnapshot } from "./scheduler.ts";
 export { startHttpServer } from "./http-server.ts";
@@ -225,6 +229,21 @@ export async function serve(opts: ServeOptions = {}): Promise<ServeHandle> {
   logger.log(
     `[runner] serve: vault=${config.vault_url} vault_name=${config.vault_name} port=${port} jobs=${scheduler.scheduledJobs}`,
   );
+
+  // Self-register into `~/.parachute/services.json` so `parachute status`,
+  // `parachute restart runner`, hub's admin SPA module catalog, and the
+  // live `/.well-known/parachute.json` builder see the runner without an
+  // operator step. Best-effort: a failure here doesn't block the daemon
+  // from serving locally — `selfRegister` swallows the error and logs.
+  // Returning here lets tests assert the outcome without spelunking logs.
+  // boundPort is what we actually bound; the self-register helper still
+  // honors any pre-existing port in services.json so an operator override
+  // survives restarts (see `selfRegister` docstring).
+  selfRegister({
+    boundPort: port,
+    installDir: resolveProjectRoot(),
+    logger,
+  });
 
   const stop = async () => {
     logger.log("[runner] shutting down — draining in-flight jobs");

@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.1.0-rc.4] - 2026-05-21
+
+feat(runner): Phase 1.3 — self-registration + module-protocol polish + health alias.
+
+This is the last Phase 1 piece — runner is friend-deploy ready. On `parachute-runner serve` boot, runner now self-registers into `~/.parachute/services.json` with its `installDir` stamped, matching the canonical agent/scribe pattern (paraclaw#117 / scribe#40). Hub's `parachute status`, `parachute restart runner`, and the live `/.well-known/parachute.json` builder all see the runner without an operator step. The `port` field — required by hub's strict `.parachute/module.json` parser — is now declared (1945, claiming the next slot in the canonical 1939–1949 range). The `/runner/healthz` alias is verified alongside canonical `/healthz` so hub-as-supervisor's health probes resolve either form.
+
+### Added
+
+- `src/services-manifest.ts` — `upsertService` + `readServiceEntry` over `~/.parachute/services.json` (path resolution honors `PARACHUTE_HOME`). Atomic write via `<path>.tmp-<pid>-<now>` rename. Merges with any existing row rather than replacing it so hub-stamped fields (`installDir` from hub#84, future `uiUrl` pass-throughs) survive a self-registration pass.
+- `src/self-register.ts` — `selfRegister({ boundPort, installDir, manifestPath?, logger? })` returns `{ ok, hadExistingEntry, portWritten, error? }`. Best-effort: malformed services.json + unwritable target both yield `{ok: false}` + warn log rather than throwing, so the daemon still serves locally when the manifest write fails. First boot stamps the resolved port; subsequent boots preserve the existing port (operator-override discipline — scribe#40 / paraclaw#145 shape). `resolveProjectRoot()` returns the runner package root (where `.parachute/` and `package.json` live) for the `installDir` stamp.
+- `src/index.ts` — `serve()` invokes `selfRegister()` after the HTTP server is up. `once` mode is unchanged — registration is daemon-only (CLI scripts don't claim a port).
+- `src/__tests__/services-manifest.test.ts` — 14 tests over `resolveManifestPath` (env precedence), `readServiceEntry` (missing file / missing name / malformed JSON), `upsertService` (first-write / merge / idempotent / sibling-preserve / atomic / nested dir create).
+- `src/__tests__/self-register.test.ts` — 9 tests over first-boot stamping, port-preservation across restarts, hub-stamped field merge, idempotency, sibling preservation, malformed-services.json + unwritable-target best-effort failure paths, and `resolveProjectRoot` pointing at a directory containing `.parachute/module.json`.
+
+### Fixed
+
+- `.parachute/module.json` — added the required `port: 1945` field (hub's strict module-manifest parser rejected the prior shape; rc.3's vendored `RUNNER_FALLBACK` in hub masked this gap). Once hub's `RUNNER_FALLBACK` retires, this is the canonical manifest hub reads.
+
+### Verified
+
+- `bun test src/` — 158 pass / 0 fail / 346 expect() calls (rc.3: 135 / 281).
+- `bun run typecheck` — clean.
+- `bunx biome check .` — clean.
+- Live smoke against `PARACHUTE_HOME=$(mktemp -d)` sandbox: runner serve binds, `/healthz` + `/runner/healthz` + `/.parachute/info` + `/.parachute/config/schema` all return 200; `/.parachute/config` returns 401 unauthenticated; self-register log emitted; services.json written with correct `port` + `paths` + `health` + `installDir`. Second boot with pre-existing services.json `port: 18999` preserved the operator port and stamped fresh `installDir` + `version`.
+
 ## [0.1.0-rc.3] - 2026-05-21
 
 feat(runner): Phase 1.2 — HTTP admin endpoints + encrypted bearer storage.

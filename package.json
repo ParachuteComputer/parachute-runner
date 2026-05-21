@@ -1,6 +1,6 @@
 {
   "name": "@openparachute/runner",
-  "version": "0.1.0-rc.2",
+  "version": "0.1.0-rc.3",
   "description": "Vault-as-job-substrate engine — spawns claude -p against vault job notes on schedule.",
   "module": "src/index.ts",
   "type": "module",
@@ -29,6 +29,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@openparachute/scope-guard": "^0.3.0",
     "croner": "^10.0.1",
     "gray-matter": "^4.0.3"
   },

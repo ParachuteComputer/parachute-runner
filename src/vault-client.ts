@@ -115,6 +115,32 @@ export class VaultClient {
   }
 
   /**
+   * Query recent runs (notes tagged `job-run`). Phase 1.2's /runner/runs
+   * endpoint surfaces this. Vault is the source of truth for run history
+   * per design doc decision 5 — we avoid a parallel SQLite of runs.
+   */
+  async queryRuns(opts: { limit?: number } = {}): Promise<VaultNote[]> {
+    const url = new URL(`${this.apiRoot()}/notes`);
+    url.searchParams.set("tag", "job-run");
+    url.searchParams.set("limit", String(opts.limit ?? 100));
+    url.searchParams.set("include_content", "false");
+    const res = await this.fetchFn(url.toString(), { method: "GET", headers: this.headers() });
+    if (!res.ok) {
+      throw new VaultClientError("queryRuns", res.status, await res.text());
+    }
+    const data = (await res.json()) as unknown;
+    if (Array.isArray(data)) return data as VaultNote[];
+    if (data && typeof data === "object" && Array.isArray((data as { notes?: unknown }).notes)) {
+      return (data as { notes: VaultNote[] }).notes;
+    }
+    throw new VaultClientError(
+      "queryRuns",
+      res.status,
+      `unexpected response shape: ${JSON.stringify(data).slice(0, 200)}`,
+    );
+  }
+
+  /**
    * Fetch a single note by ID or path. Returns null on 404 to make the
    * "job moved/deleted between poll and run" path cheap to handle.
    */

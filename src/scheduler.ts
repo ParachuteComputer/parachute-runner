@@ -17,6 +17,7 @@ import { Cron } from "croner";
 
 import { InvalidJobError, parseJob } from "./job-parser.ts";
 import { runJob } from "./run-job.ts";
+import { randomRunId } from "./template.ts";
 import type { VaultClient, VaultNote } from "./vault-client.ts";
 
 export type SchedulerOpts = {
@@ -43,6 +44,24 @@ type Scheduled = {
   jobPath: string;
   schedule: string;
   cron: Cron | null;
+  /** Set to true when the job's frontmatter `disabled: true` is loaded — kept in the table for visibility on /runner/jobs. */
+  disabled: boolean;
+  /** ISO timestamp of the last completed run (success or failure). */
+  lastRunAt: string | null;
+  /** Outcome of the last completed run. */
+  lastRunStatus: "ok" | "failed" | null;
+  /** Run-id of the last completed run. */
+  lastRunId: string | null;
+};
+
+export type SchedulerJobSnapshot = {
+  jobPath: string;
+  schedule: string;
+  nextRunAt: string | null;
+  disabled: boolean;
+  lastRunAt: string | null;
+  lastRunStatus: "ok" | "failed" | null;
+  lastRunId: string | null;
 };
 
 /**
@@ -157,15 +176,34 @@ export class Scheduler {
       existing?.cron?.stop();
       this.scheduled.delete(job.path);
 
+      // Preserve last-run-* across a schedule change so the new entry doesn't
+      // forget that the job ran successfully yesterday.
+      const carry = {
+        lastRunAt: existing?.lastRunAt ?? null,
+        lastRunStatus: existing?.lastRunStatus ?? null,
+        lastRunId: existing?.lastRunId ?? null,
+      };
       if (job.disabled || job.cronString === null) {
         // disabled + manual jobs are tracked but don't auto-fire.
-        this.scheduled.set(job.path, { jobPath: job.path, schedule: job.schedule, cron: null });
+        this.scheduled.set(job.path, {
+          jobPath: job.path,
+          schedule: job.schedule,
+          cron: null,
+          disabled: job.disabled,
+          ...carry,
+        });
       } else {
         const cron = new Cron(job.cronString, { paused: false }, () => {
           if (this.stopped || this.opts.disabled) return;
           void this.maturate(note);
         });
-        this.scheduled.set(job.path, { jobPath: job.path, schedule: job.schedule, cron });
+        this.scheduled.set(job.path, {
+          jobPath: job.path,
+          schedule: job.schedule,
+          cron,
+          disabled: false,
+          ...carry,
+        });
       }
       this.emit({ type: "job-loaded", jobPath: job.path, schedule: job.schedule });
     }
@@ -214,10 +252,24 @@ export class Scheduler {
       const fresh = (await this.opts.client.getNote(note.id)) ?? note;
       const reparsed = parseJob(fresh);
       const result = await runJob({ client: this.opts.client, job: reparsed });
+      this.recordRunOutcome(job.path, result.outcome.status, result.outcome.metadata.run_id);
       this.emit({ type: "job-fired", jobPath: job.path, status: result.outcome.status });
     } catch (e) {
       this.emit({ type: "job-error", jobPath: job.path, error: (e as Error).message });
     }
+  }
+
+  /**
+   * Update the scheduled-table entry for this job with the latest run
+   * outcome. Used by both the cron-fired path and the force-run path so
+   * /runner/jobs surfaces last-run for every job that's run.
+   */
+  private recordRunOutcome(jobPath: string, status: "ok" | "failed", runId: string): void {
+    const entry = this.scheduled.get(jobPath);
+    if (!entry) return;
+    entry.lastRunAt = new Date().toISOString();
+    entry.lastRunStatus = status;
+    entry.lastRunId = runId;
   }
 
   private acquireSlot(): Promise<void> {
@@ -241,29 +293,95 @@ export class Scheduler {
 
   /**
    * Force-run a job by path (used by `once --only <path>` and the
-   * `/runner/jobs/<id>/run-now` Phase 1.2 endpoint). Returns the
-   * RunJobResult or throws on parse failure.
+   * `/runner/jobs/<id>/run-now` Phase 1.2 endpoint). Returns the run-id +
+   * outcome so the HTTP endpoint can surface "where the result note will
+   * land" to the operator.
+   *
+   * Returns null jobNotFound when the path doesn't resolve so the HTTP
+   * endpoint can return 404 cleanly without catching an arbitrary `Error`.
    */
-  async forceRun(jobPath: string): Promise<void> {
+  async forceRun(
+    jobPath: string,
+  ): Promise<
+    { found: true; runId: string; status: "ok" | "failed"; outputPath: string } | { found: false }
+  > {
     const fresh = await this.opts.client.getNote(jobPath);
-    if (!fresh) throw new Error(`no job at ${jobPath}`);
+    if (!fresh) return { found: false };
     const job = parseJob(fresh);
+    const runId = randomRunId();
     await this.acquireSlot();
     try {
-      const result = await runJob({ client: this.opts.client, job });
+      const result = await runJob({ client: this.opts.client, job, runId });
+      this.recordRunOutcome(job.path, result.outcome.status, runId);
       this.emit({ type: "job-fired", jobPath: job.path, status: result.outcome.status });
+      return {
+        found: true,
+        runId,
+        status: result.outcome.status,
+        outputPath: result.outcome.outputPath,
+      };
     } finally {
       this.releaseSlot();
     }
   }
 
-  /** Return a snapshot of the scheduled jobs — used by /healthz + /jobs. */
-  snapshot(): Array<{ jobPath: string; schedule: string; nextRunAt: string | null }> {
+  /** Return a snapshot of the scheduled jobs — used by /healthz + /runner/jobs. */
+  snapshot(): SchedulerJobSnapshot[] {
     return [...this.scheduled.values()].map((s) => ({
       jobPath: s.jobPath,
       schedule: s.schedule,
       nextRunAt: s.cron?.nextRun()?.toISOString() ?? null,
+      disabled: s.disabled,
+      lastRunAt: s.lastRunAt,
+      lastRunStatus: s.lastRunStatus,
+      lastRunId: s.lastRunId,
     }));
+  }
+
+  /**
+   * Hot-reload entry point for the HTTP PUT-config path. Cancels the poll
+   * timer, restarts polling with a new cadence — used when an operator
+   * changes `poll_interval_seconds` via the admin SPA.
+   */
+  setPollIntervalSeconds(seconds: number): void {
+    if (!Number.isInteger(seconds) || seconds < 1) {
+      throw new Error(`pollIntervalSeconds must be a positive integer (got ${seconds})`);
+    }
+    (this.opts as { pollIntervalSeconds: number }).pollIntervalSeconds = seconds;
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = setInterval(() => {
+        void this.poll();
+      }, seconds * 1000);
+      if (
+        typeof (this.pollTimer as ReturnType<typeof setInterval> & { unref?: () => void }).unref ===
+        "function"
+      ) {
+        (this.pollTimer as ReturnType<typeof setInterval> & { unref: () => void }).unref();
+      }
+    }
+  }
+
+  /**
+   * Hot-reload entry point for `disabled` (global kill switch). When set to
+   * true, scheduled crons remain registered but the maturate callback short-
+   * circuits — no claude -p spawn, no output note. setting back to false
+   * resumes the next tick.
+   */
+  setDisabled(disabled: boolean): void {
+    (this.opts as { disabled: boolean }).disabled = disabled;
+  }
+
+  /**
+   * Replace the vault client (used when `vault_url` or `vault_token` change
+   * via PUT-config). Drops the existing schedule + repolls so jobs from the
+   * new vault populate the table.
+   */
+  async replaceClient(next: VaultClient): Promise<void> {
+    for (const s of this.scheduled.values()) s.cron?.stop();
+    this.scheduled.clear();
+    (this.opts as { client: VaultClient }).client = next;
+    await this.poll();
   }
 
   private emit(event: SchedulerEvent): void {

@@ -11,13 +11,16 @@
  *   https://github.com/ParachuteComputer/parachute.computer/blob/main/design/2026-05-21-parachute-runner-design.md
  */
 
+import * as nodePath from "node:path";
+
 import pkg from "../package.json" with { type: "json" };
 
-import { type RunnerConfig, loadConfig } from "./config.ts";
-import { startHealthz } from "./healthz.ts";
+import { type RunnerConfig, loadConfig, resolveConfigPath } from "./config.ts";
+import { type RunnerState, startHttpServer } from "./http-server.ts";
 import { parseJob } from "./job-parser.ts";
 import { runJob } from "./run-job.ts";
 import { Scheduler } from "./scheduler.ts";
+import { SecretsStore } from "./secrets.ts";
 import { VaultClient, type VaultNote } from "./vault-client.ts";
 
 export * from "./config.ts";
@@ -28,9 +31,12 @@ export * from "./spawn.ts";
 export * from "./output-writer.ts";
 export * from "./vault-client.ts";
 export * from "./run-job.ts";
+export * from "./secrets.ts";
+export * from "./auth.ts";
 export { Scheduler } from "./scheduler.ts";
-export type { SchedulerEvent, SchedulerOpts } from "./scheduler.ts";
-export { startHealthz } from "./healthz.ts";
+export type { SchedulerEvent, SchedulerOpts, SchedulerJobSnapshot } from "./scheduler.ts";
+export { startHttpServer } from "./http-server.ts";
+export type { RunnerState, HttpServerOpts } from "./http-server.ts";
 
 /** Package semver. */
 export const VERSION: string = pkg.version;
@@ -149,13 +155,23 @@ export type ServeHandle = {
 
 /**
  * Long-running daemon: poll the vault for jobs on a cadence and mature them
- * on schedule. Returns a handle that the CLI uses to wire SIGINT/SIGTERM
- * into graceful shutdown.
+ * on schedule. Returns a handle the CLI uses to wire SIGINT/SIGTERM into
+ * graceful shutdown.
+ *
+ * Phase 1.2 lift: the HTTP server now hosts admin endpoints on the same
+ * port (`/runner/jobs`, `/runner/runs`, etc.) — see `http-server.ts`. The
+ * scheduler + client are shared with the HTTP handler via the `state`
+ * object so PUT-config can hot-reload them.
  */
 export async function serve(opts: ServeOptions = {}): Promise<ServeHandle> {
-  const config = loadConfig(opts.configPath);
+  const { configPath: optConfigPath } = opts;
   const logger = opts.logger ?? console;
   const port = opts.port ?? DEFAULT_PORT;
+
+  // Resolve the config path first so we can pass an aligned secrets store.
+  const configPath = optConfigPath ?? undefined;
+  const config = loadConfig({ configPath, logger });
+
   const client = new VaultClient({
     vaultUrl: config.vault_url,
     vaultName: config.vault_name,
@@ -183,7 +199,29 @@ export async function serve(opts: ServeOptions = {}): Promise<ServeHandle> {
   });
   await scheduler.start();
   const startedAt = new Date();
-  const server = startHealthz({ scheduler, port, startedAt });
+  // Resolve a SecretsStore aligned with the configPath the daemon is using
+  // so the HTTP PUT-config + clear-credential endpoints write to the same
+  // envelope `loadConfig` will read on reload. Without an explicit path we
+  // fall through to `resolveSecretsPaths()` (canonical $PARACHUTE_HOME).
+  const resolvedConfigPath = configPath ?? resolveConfigPath();
+  const secrets = optConfigPath
+    ? new SecretsStore({
+        paths: {
+          dir: nodePath.dirname(resolvedConfigPath),
+          masterKeyPath: nodePath.join(nodePath.dirname(resolvedConfigPath), "master.key"),
+          secretsPath: nodePath.join(nodePath.dirname(resolvedConfigPath), "secrets.json"),
+        },
+        createIfMissing: false,
+      })
+    : new SecretsStore({ createIfMissing: false });
+  const state: RunnerState = {
+    config,
+    configPath: resolvedConfigPath,
+    secrets,
+    scheduler,
+    client,
+  };
+  const server = startHttpServer({ state, port, startedAt, logger });
   logger.log(
     `[runner] serve: vault=${config.vault_url} vault_name=${config.vault_name} port=${port} jobs=${scheduler.scheduledJobs}`,
   );

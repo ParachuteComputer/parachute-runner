@@ -543,6 +543,45 @@ describe("PUT /.parachute/config", () => {
     const persisted = fs.readFileSync(configPath, "utf8");
     expect(persisted).not.toContain("pvt_must_be_encrypted");
   });
+
+  test("response surfaces deferred fields when max_concurrent_jobs changes", async () => {
+    const token = await withToken();
+    const res = await fetch(url("/.parachute/config"), {
+      method: "PUT",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ max_concurrent_jobs: 8 }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; deferred: string[] };
+    expect(body.ok).toBe(true);
+    expect(body.deferred).toEqual(["max_concurrent_jobs"]);
+  });
+
+  test("response deferred is empty when only hot-reload fields change", async () => {
+    const token = await withToken();
+    const res = await fetch(url("/.parachute/config"), {
+      method: "PUT",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ poll_interval_seconds: 30 }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; deferred: string[] };
+    expect(body.ok).toBe(true);
+    expect(body.deferred).toEqual([]);
+  });
+
+  test("response deferred lists only deferred fields when mixed change", async () => {
+    const token = await withToken();
+    const res = await fetch(url("/.parachute/config"), {
+      method: "PUT",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ poll_interval_seconds: 45, max_concurrent_jobs: 12 }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; deferred: string[] };
+    expect(body.ok).toBe(true);
+    expect(body.deferred).toEqual(["max_concurrent_jobs"]);
+  });
 });
 
 describe("POST /runner/jobs/<path>/run-now", () => {

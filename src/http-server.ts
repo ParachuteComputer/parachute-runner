@@ -325,12 +325,21 @@ async function handleConfigPut(
   const prev = state.config;
   state.config = nextConfig;
 
+  // Track which fields actually changed so we can surface deferred ones in
+  // the response (operators shouldn't be surprised when e.g.
+  // `max_concurrent_jobs` persists silently but won't take effect until the
+  // next restart).
+  const changedFields: string[] = [];
+
   // Vault client: replace when url/name/token changed; otherwise reuse.
   const clientChanged =
     nextConfig.vault_url !== prev.vault_url ||
     nextConfig.vault_name !== prev.vault_name ||
     nextConfig.vault_token !== prev.vault_token;
   if (clientChanged) {
+    if (nextConfig.vault_url !== prev.vault_url) changedFields.push("vault_url");
+    if (nextConfig.vault_name !== prev.vault_name) changedFields.push("vault_name");
+    if (nextConfig.vault_token !== prev.vault_token) changedFields.push("vault_token");
     state.client = new VaultClient({
       vaultUrl: nextConfig.vault_url,
       vaultName: nextConfig.vault_name,
@@ -346,18 +355,41 @@ async function handleConfigPut(
     }
   }
   if (nextConfig.poll_interval_seconds !== prev.poll_interval_seconds) {
+    changedFields.push("poll_interval_seconds");
     state.scheduler.setPollIntervalSeconds(nextConfig.poll_interval_seconds);
     ctx.logger.log(
       `[runner] hot-reload: poll_interval_seconds=${nextConfig.poll_interval_seconds}`,
     );
   }
   if (nextConfig.disabled !== prev.disabled) {
+    changedFields.push("disabled");
     state.scheduler.setDisabled(nextConfig.disabled);
     ctx.logger.log(`[runner] hot-reload: disabled=${nextConfig.disabled}`);
   }
+  if (nextConfig.max_concurrent_jobs !== prev.max_concurrent_jobs) {
+    // Persisted to disk but the live semaphore depth doesn't change
+    // mid-life — see Phase 1.2 design note. Surface in the response so
+    // operators know to restart.
+    changedFields.push("max_concurrent_jobs");
+  }
 
-  return Response.json({ ok: true });
+  const deferred = changedFields.filter((f) => DEFERRED_FIELDS.has(f));
+  if (deferred.length > 0) {
+    ctx.logger.log(
+      `[config] PUT applied ${changedFields.length} field${changedFields.length === 1 ? "" : "s"}; ${deferred.length} deferred until restart: ${deferred.join(", ")}`,
+    );
+  }
+
+  return Response.json({ ok: true, deferred });
 }
+
+/**
+ * Config fields that are accepted + persisted to disk by PUT
+ * /.parachute/config but don't take effect until the runner process restarts.
+ * Surfaced in the PUT response `deferred` array so operators aren't surprised
+ * when a setting persists silently with no live effect.
+ */
+const DEFERRED_FIELDS = new Set<string>(["max_concurrent_jobs"]);
 
 async function handleClearCredential(state: RunnerState, ctx: HandleCtx): Promise<Response> {
   state.secrets.clear("vault_token");

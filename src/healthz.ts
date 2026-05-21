@@ -14,6 +14,15 @@ export type HealthzOpts = {
   port: number;
   /** Starting time of the runner process (for uptime calc). */
   startedAt: Date;
+  /**
+   * Bind address. Defaults to `127.0.0.1` — loopback-only because healthz
+   * leaks job count + scheduling state, and the Phase 1.2 admin endpoints
+   * (`/runner/jobs`, `/runner/runs`, force-run) will tighten further. v0.6
+   * single-container deploys reach this via hub's reverse proxy on the same
+   * localhost; cloud / multi-host setups should keep the default until a
+   * deliberate config field opens it up.
+   */
+  hostname?: string;
   /** Override for tests — defaults to Bun.serve. */
   serveFn?: typeof Bun.serve;
 };
@@ -24,9 +33,11 @@ export type HealthzOpts = {
  */
 export function startHealthz(opts: HealthzOpts): ReturnType<typeof Bun.serve> {
   const { scheduler, port, startedAt } = opts;
+  const hostname = opts.hostname ?? "127.0.0.1";
   const serve = opts.serveFn ?? Bun.serve;
   return serve({
     port,
+    hostname,
     fetch(req) {
       const url = new URL(req.url);
       if (

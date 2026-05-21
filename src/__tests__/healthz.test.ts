@@ -75,4 +75,16 @@ describe("startHealthz", () => {
     expect(res.status).toBe(404);
     await scheduler.stop(100);
   });
+
+  it("binds loopback-only (127.0.0.1) by default — healthz leaks state", async () => {
+    const scheduler = new Scheduler({
+      client: noClient(),
+      pollIntervalSeconds: 9999,
+      maxConcurrentJobs: 4,
+    });
+    server = startHealthz({ scheduler, port: 0, startedAt: new Date() });
+    // Bun.Server exposes the bound hostname; assert it's loopback, not 0.0.0.0.
+    expect(server.hostname).toBe("127.0.0.1");
+    await scheduler.stop(100);
+  });
 });

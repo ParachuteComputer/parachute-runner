@@ -1,0 +1,40 @@
+{
+  "name": "@openparachute/runner",
+  "version": "0.1.0-rc.1",
+  "description": "Vault-as-job-substrate engine — spawns claude -p against vault job notes on schedule.",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": false,
+  "license": "AGPL-3.0",
+  "bin": {
+    "parachute-runner": "bin/parachute-runner.ts"
+  },
+  "files": [
+    "src/**/*.ts",
+    "!src/**/*.test.ts",
+    "bin/**/*.ts",
+    ".parachute/module.json",
+    ".parachute/info",
+    ".parachute/config/schema",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "start": "bun run bin/parachute-runner.ts serve",
+    "test": "bun test src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/bun": "latest",
+    "typescript": "^5"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

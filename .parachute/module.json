@@ -1,0 +1,13 @@
+{
+  "name": "runner",
+  "manifestName": "parachute-runner",
+  "displayName": "Runner",
+  "tagline": "Vault-as-job-substrate engine — spawns claude -p against vault job notes on schedule.",
+  "kind": "service",
+  "paths": ["/runner"],
+  "health": "/runner/healthz",
+  "startCmd": ["parachute-runner", "serve"],
+  "scopes": {
+    "defines": ["runner:read", "runner:admin"]
+  }
+}

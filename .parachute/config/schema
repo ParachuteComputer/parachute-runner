@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://parachute.computer/schemas/runner-config.json",
+  "title": "parachute-runner config",
+  "description": "Runtime configuration for parachute-runner. Persisted at $PARACHUTE_HOME/runner/config.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["vault_url", "vault_token"],
+  "properties": {
+    "vault_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Origin where the target vault is reachable. Loopback for v0.6 single-container; tailnet/wan when split."
+    },
+    "vault_name": {
+      "type": "string",
+      "default": "default",
+      "description": "Which vault on that origin to read jobs from."
+    },
+    "vault_token": {
+      "type": "string",
+      "writeOnly": true,
+      "description": "pvt_* bearer with vault:<name>:write scope. Stored encrypted on disk; never returned by GET /.parachute/config."
+    },
+    "poll_interval_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 60,
+      "description": "How often to re-scan the vault for tag:job notes."
+    },
+    "max_concurrent_jobs": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 4,
+      "description": "Fan-out limit per scheduler tick — at most this many claude -p subprocesses run at once."
+    },
+    "disabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Global kill switch — daemon stays running but skips all maturation."
+    }
+  },
+  "x-scopes": ["runner:read", "runner:admin"]
+}

@@ -21,8 +21,8 @@ function usage(): void {
   console.log(`parachute-runner — vault-as-job-substrate engine
 
 Usage:
-  parachute-runner serve [opts]          Start the scheduler daemon
-  parachute-runner once [opts]           Enumerate matured jobs, run, exit
+  parachute-runner serve [opts]          Start the scheduler daemon + HTTP admin server
+  parachute-runner once [opts]           Enumerate matured jobs, run, exit (no HTTP server)
   parachute-runner --help, -h            Show this help
   parachute-runner --version             Print version and exit
 
@@ -33,9 +33,21 @@ Usage:
   --dry-run                              Enumerate + render, but don't spawn claude
 
 \`serve\` options:
-  --port <n>                             Override healthz port (default: 1945)
+  --port <n>                             Override HTTP server port (default: 1945)
   --poll-interval <seconds>              Override poll cadence (default: from config)
   --shutdown-timeout <seconds>           Graceful-shutdown deadline (default: 30)
+
+HTTP endpoints (serve mode):
+  GET  /healthz                          Liveness — open
+  GET  /runner/jobs                      List scheduled jobs (runner:admin)
+  GET  /runner/runs?since=...&limit=...  Recent runs from vault tag:job-run (runner:admin)
+  POST /runner/jobs/<path>/run-now       Force one job out-of-schedule (runner:admin)
+  GET  /.parachute/info                  Module identity — open
+  GET  /.parachute/config/schema         Draft-07 JSON Schema — open
+  GET  /.parachute/config                Resolved config (vault_token omitted) (runner:admin)
+  PUT  /.parachute/config                Partial update — hot-reloaded (runner:admin)
+  POST /.parachute/clear-credential/vault-token
+                                         Clear stored bearer + halt scheduler (runner:admin)
 
 Config:
   \$PARACHUTE_HOME/runner/config.json     Resolved config (see .parachute/config/schema)

@@ -4,7 +4,8 @@
   "displayName": "Runner",
   "tagline": "Vault-as-job-substrate engine — spawns claude -p against vault job notes on schedule.",
   "kind": "tool",
-  "paths": ["/runner"],
+  "paths": ["/runner", "/.parachute"],
+  "stripPrefix": false,
   "health": "/runner/healthz",
   "startCmd": ["parachute-runner", "serve"],
   "scopes": {

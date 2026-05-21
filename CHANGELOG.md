@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.1.0-rc.3] - 2026-05-21
+
+feat(runner): Phase 1.2 — HTTP admin endpoints + encrypted bearer storage.
+
+The runner's HTTP surface grows into the full set the design doc names: jobs / runs / run-now admin endpoints, the `.parachute/config[/schema]` module-protocol endpoints (consumable by hub#300's admin SPA), and a clear-credential admin action. Every non-`/healthz` route is gated by a hub-issued JWT carrying `runner:admin` scope. The `vault_token` migrates off plaintext disk into an AES-256-GCM envelope keyed off `master.key` — same shape parachute-agent established for credentials at rest. PUT-config hot-reloads the live scheduler in-process (poll cadence, kill switch, vault client) so the design doc's "changes take effect immediately, no process restart" actually holds.
+
+### Added
+
+- `src/secrets.ts` — `SecretsStore` over `master.key` (0o600, 32 random bytes, auto-generated on first boot) + `secrets.json` envelope. AES-256-GCM with 12-byte random IV per write (fresh nonce per encryption; identical plaintext produces different ciphertext). Versioned envelope shape so future migrations don't strand existing operators. Plaintext `vault_token` in legacy `config.json` is auto-migrated to the envelope on first boot and stripped from the file (idempotent — re-runs after a partial crash converge to the same end state).
+- `src/auth.ts` — hub-issued JWT verification via `@openparachute/scope-guard@^0.3.0`. Process-wide guard, lazy-instantiated. Audience pinned to `"runner"` (matches hub#300's mint shape); `runner:admin` scope required on every non-`/healthz` route. Revocation-list integration inherited from scope-guard. Hub origin resolved via `PARACHUTE_HUB_ORIGIN` env with loopback fallback at `http://127.0.0.1:1939`.
+- `src/http-server.ts` — replaces `healthz.ts`. Hosts: `GET /healthz`, `GET /runner/jobs`, `GET /runner/runs`, `POST /runner/jobs/<path>/run-now`, `GET/PUT /.parachute/config`, `GET /.parachute/config/schema`, `GET /.parachute/info`, `POST /.parachute/clear-credential/vault-token`. Loopback-only by default; runner reaches operators through hub's reverse proxy on the same localhost.
+- `src/config.ts` lift — `loadConfig` merges the encrypted `vault_token` from the envelope before validation; `applyConfigPatch` is the read-modify-write entry point the PUT handler uses; `validatePutBody` accepts partial updates (missing fields = "leave unchanged"); `toPublicConfig` drops the writeOnly bearer for GET responses.
+- `Scheduler` lift — `forceRun` now returns `{runId, status, outputPath}` so the HTTP endpoint can surface where the result note will land. `snapshot()` includes `lastRunAt`, `lastRunStatus`, `lastRunId`, `disabled`. `setPollIntervalSeconds`, `setDisabled`, and `replaceClient` are the hot-reload entry points the PUT handler calls.
+- `VaultClient.queryRuns()` — `tag:job-run` query for the runs endpoint; vault stays the source of truth per design doc decision 5.
+- `src/__tests__/secrets.test.ts` — 20 tests covering AES-GCM round-trip, IV freshness, file modes (0o600 on master.key + secrets.json + config.json), envelope tamper-detection, version-mismatch rejection, master-key corruption, plaintext migration (happy path + idempotency + file mode).
+- `src/__tests__/http-server.test.ts` — 33 tests over a Bun.serve fake hub (JWKS + revocation-list) + fake vault. Covers every route's 200 happy path, 401/403 by various failure modes (missing bearer, bad signature, wrong issuer, wrong audience, wrong scope), 404 unknown job, 400 bad input, writeOnly omission on GET-config, partial PUT preserves unchanged values, hot-reload of poll_interval / disabled / vault_token / vault_url, clear-credential clears the secret + halts the scheduler, PUT-written vault_token never lands in config.json on disk.
+
+### Changed
+
+- `module.json#paths` adds `/.parachute` so hub's reverse proxy forwards the module-protocol endpoints (hub#300's admin SPA consumes these).
+- `module.json#stripPrefix: false` so the runner sees the full path (e.g. `/runner/jobs`) as before — explicit on-entry for clarity.
+
+### Verified
+
+- `bun test src/` — 132 pass / 0 fail / 281 expect() calls.
+- `bun run typecheck` — clean.
+- `bunx biome check .` — clean (formatter + linter).
+
 ## [0.1.0-rc.2] - 2026-05-21
 
 feat(runner): Phase 1.1 — `once` + `serve` against real vault.

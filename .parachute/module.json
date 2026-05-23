@@ -3,7 +3,6 @@
   "manifestName": "parachute-runner",
   "displayName": "Runner",
   "tagline": "Vault-as-job-substrate engine — spawns claude -p against vault job notes on schedule.",
-  "kind": "tool",
   "port": 1945,
   "paths": ["/runner", "/.parachute"],
   "stripPrefix": false,

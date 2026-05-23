@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.0-rc.5] - 2026-05-22
+
+fix(runner): self-register uses `manifestName` as services.json row key
+(matches hub install path; mirrors app fix).
+
+Hub installs modules under `manifest.manifestName` (`"parachute-runner"`),
+but the boot-time self-registration was writing under the short name
+`"runner"`. The two writes left services.json with two rows on the
+same port, which trips hub's duplicate-port detector on re-read.
+
+The row key is now sourced from `.parachute/module.json#manifestName`,
+so the install path and the runtime path converge to one row. Mirrors
+the fix landed in parachute-app for the same shape of bug.
+
 ## [0.1.0-rc.4] - 2026-05-21
 
 feat(runner): Phase 1.3 — self-registration + module-protocol polish + health alias.

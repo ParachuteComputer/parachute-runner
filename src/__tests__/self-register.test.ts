@@ -73,7 +73,11 @@ describe("selfRegister — first boot", () => {
     };
     expect(raw.services).toHaveLength(1);
     const entry = raw.services[0]!;
-    expect(entry.name).toBe("runner");
+    // Row key is the manifestName from .parachute/module.json — hub looks
+    // modules up by manifestName, so registering under the short "runner"
+    // here would race the hub-installed `parachute-runner` row and trip
+    // the duplicate-port detector.
+    expect(entry.name).toBe("parachute-runner");
     expect(entry.port).toBe(1945);
     expect(entry.paths).toEqual(["/runner", "/.parachute"]);
     expect(entry.health).toBe("/runner/healthz");
@@ -93,6 +97,41 @@ describe("selfRegister — first boot", () => {
     expect(logger.logs[0]).toContain("self-registered");
     expect(logger.warnings).toHaveLength(0);
   });
+
+  test("regression: row key matches the manifestName hub installs under (no duplicate `runner` row)", () => {
+    // Hub's install path writes the services.json row under
+    // manifest.manifestName ("parachute-runner"). If self-register writes
+    // under the short name "runner", the file ends up with two rows on
+    // the same port — hub's re-read flags it as a duplicate-port
+    // collision. This test pins the row key to manifestName so the two
+    // paths converge to one row.
+    fs.writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        services: [
+          {
+            name: "parachute-runner", // hub-installed row
+            port: 1945,
+            paths: ["/runner"],
+            health: "/runner/healthz",
+            version: "hub-stamped",
+          },
+        ],
+      }),
+    );
+    selfRegister({
+      boundPort: 1945,
+      installDir: "/post-install/checkout",
+      manifestPath,
+      logger,
+    });
+    const raw = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
+      services: Array<{ name: string; port: number }>;
+    };
+    expect(raw.services).toHaveLength(1); // not 2
+    expect(raw.services[0]?.name).toBe("parachute-runner");
+    expect(raw.services.find((s) => s.name === "runner")).toBeUndefined();
+  });
 });
 
 describe("selfRegister — subsequent boot (existing entry)", () => {
@@ -103,7 +142,7 @@ describe("selfRegister — subsequent boot (existing entry)", () => {
       JSON.stringify({
         services: [
           {
-            name: "runner",
+            name: "parachute-runner",
             port: 1948, // operator override, not the default
             paths: ["/runner", "/.parachute"],
             health: "/runner/healthz",
@@ -138,7 +177,7 @@ describe("selfRegister — subsequent boot (existing entry)", () => {
       JSON.stringify({
         services: [
           {
-            name: "runner",
+            name: "parachute-runner",
             port: 1945,
             paths: ["/runner"],
             health: "/runner/healthz",
@@ -198,7 +237,7 @@ describe("selfRegister — subsequent boot (existing entry)", () => {
     const raw = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
       services: Array<{ name: string }>;
     };
-    expect(raw.services.map((s) => s.name).sort()).toEqual(["runner", "scribe", "vault"]);
+    expect(raw.services.map((s) => s.name).sort()).toEqual(["parachute-runner", "scribe", "vault"]);
   });
 });
 

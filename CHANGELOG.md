@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.0-rc.7] - 2026-05-23
+
+### Removed
+
+- Dropped `kind` field from the `/.parachute/info` runtime endpoint response. Companion to runner#7's module.json drop. Closes part of hub#340.
+
 ## [0.1.0-rc.6] - 2026-05-23
 
 - Dropped `kind` field from `.parachute/module.json`. Per hub#301 Phase B. No behavior change.

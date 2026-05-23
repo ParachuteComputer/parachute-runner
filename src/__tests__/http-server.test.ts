@@ -282,6 +282,9 @@ describe("GET /.parachute/info — open", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.name).toBe("parachute-runner");
+    // hub#340: `kind` was dropped from info response; companion to runner#7's
+    // module.json drop. Regression guard.
+    expect(body.kind).toBeUndefined();
   });
 });
 

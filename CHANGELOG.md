@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.0-rc.6] - 2026-05-23
+
+- Dropped `kind` field from `.parachute/module.json`. Per hub#301 Phase B. No behavior change.
+
 ## [0.1.0-rc.5] - 2026-05-22
 
 fix(runner): self-register uses `manifestName` as services.json row key

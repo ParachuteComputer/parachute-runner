@@ -35,10 +35,39 @@
  * If a future hub endpoint changes that, runner's `selfRegister` is the
  * one call site to extend.
  */
+import { readFileSync } from "node:fs";
 import * as path from "node:path";
 
 import pkg from "../package.json" with { type: "json" };
 import { type ServiceEntry, readServiceEntry, upsertService } from "./services-manifest.ts";
+
+/**
+ * The canonical services.json row key for the runner module — sourced from
+ * `.parachute/module.json#manifestName`. Hub looks up modules in
+ * services.json by `manifestName` (vault + scribe use this convention), so
+ * self-registering under the short name "runner" would create a duplicate
+ * row alongside the hub-installed `parachute-runner` row and trip hub's
+ * duplicate-port detector on re-read. Mirrors the fix landed on
+ * parachute-app for the same shape of bug. */
+const ROW_NAME = resolveManifestName();
+
+function resolveManifestName(): string {
+  // Read once at module load — `.parachute/module.json` ships in the
+  // package and doesn't change at runtime.
+  try {
+    const manifestPath = path.resolve(import.meta.dir, "..", ".parachute", "module.json");
+    const raw = JSON.parse(readFileSync(manifestPath, "utf8")) as { manifestName?: unknown };
+    if (typeof raw.manifestName === "string" && raw.manifestName.length > 0) {
+      return raw.manifestName;
+    }
+  } catch {
+    // Fall through to the conservative fallback. The module.json is part
+    // of the published package, so this branch is effectively unreachable
+    // in production — it exists so tests that mount a stub package layout
+    // don't hard-crash on import.
+  }
+  return "parachute-runner";
+}
 
 export type SelfRegisterOpts = {
   /**
@@ -66,7 +95,7 @@ export type SelfRegisterResult = {
   ok: boolean;
   /** The path we wrote to (or attempted to write to). */
   manifestPath: string;
-  /** True when services.json already had a row for `runner` before we wrote. */
+  /** True when services.json already had a row for `parachute-runner` before we wrote. */
   hadExistingEntry: boolean;
   /** The port we ended up stamping (existing-entry port or boundPort). */
   portWritten: number;
@@ -90,7 +119,7 @@ export function selfRegister(opts: SelfRegisterOpts): SelfRegisterResult {
 
   let existing: ServiceEntry | undefined;
   try {
-    existing = readServiceEntry("runner", manifestPath);
+    existing = readServiceEntry(ROW_NAME, manifestPath);
   } catch (e) {
     // Malformed services.json — don't blow up boot. The first write below
     // would also throw; we trade an early bail for a noisy log so the
@@ -108,7 +137,7 @@ export function selfRegister(opts: SelfRegisterOpts): SelfRegisterResult {
 
   const portToWrite = existing?.port ?? opts.boundPort;
   const entry: ServiceEntry = {
-    name: "runner",
+    name: ROW_NAME,
     port: portToWrite,
     paths: ["/runner", "/.parachute"],
     health: "/runner/healthz",

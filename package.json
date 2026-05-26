@@ -20,6 +20,10 @@
     "LICENSE",
     "CHANGELOG.md"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ParachuteComputer/parachute-runner.git"
+  },
   "publishConfig": {
     "access": "public"
   },

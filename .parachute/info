@@ -2,6 +2,9 @@
   "name": "parachute-runner",
   "displayName": "Runner",
   "tagline": "Vault-as-job-substrate engine — spawns claude -p against vault job notes on schedule.",
-  "version": "0.1.0-rc.7",
-  "capabilities": ["scheduled-jobs", "claude-p-runner"]
+  "version": "0.1.0",
+  "capabilities": [
+    "scheduled-jobs",
+    "claude-p-runner"
+  ]
 }

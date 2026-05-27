@@ -48,7 +48,7 @@ import { type ServiceEntry, readServiceEntry, upsertService } from "./services-m
  * self-registering under the short name "runner" would create a duplicate
  * row alongside the hub-installed `parachute-runner` row and trip hub's
  * duplicate-port detector on re-read. Mirrors the fix landed on
- * parachute-app for the same shape of bug. */
+ * parachute-surface for the same shape of bug. */
 const ROW_NAME = resolveManifestName();
 
 function resolveManifestName(): string {
